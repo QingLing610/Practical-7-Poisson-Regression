@@ -1,0 +1,278 @@
+---
+title: "Practical 7 Answers"
+subtitle: "GLMs: Poisson Regression"
+author: "Linh"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    code-fold: false
+    link-external-newwindow: true
+    link-external-icon: true
+editor: source
+---
+
+## Getting started
+
+```{r}
+#| label: setup
+#| message: false
+#| warning: false
+
+# Install packages once if needed:
+# install.packages(c("janitor", "performance"))
+
+library(ggplot2)
+library(dplyr)
+library(readxl)
+library(janitor)
+library(stringr)
+library(tidyr)
+library(performance)
+```
+
+## England and Wales homicide data
+
+### Question 1
+
+**Open the Excel spreadsheet and inspect its format. What cleaning do you predict will be needed?**
+
+The spreadsheet has a title/source block before the header row, footnote digits in some column names, an unnamed leading column for the year, blank rows between groups of years, and notes below the data. The year format also changes from calendar years (e.g. `1977`) to financial years (e.g. `1997/98`).
+
+### Question 2
+
+**Read the second sheet into R using `read_excel()`. Use `sheet` and `skip` to control what is read.**
+
+```{r}
+#| label: read-data
+
+hom_raw <- read_excel(
+  "data/Knife-crime-statistics-data-tables-Oct-2025.xlsx",
+  sheet = "Table 2",
+  skip = 3
+)
+
+hom_raw
+```
+
+`skip = 3` skips the title/source rows above the actual header row. The blank first column is automatically named `...1`.
+
+### Question 3
+
+**Use `View()` to inspect the data in R. What elements need tidying?**
+
+```{r}
+#| label: inspect-data
+#| eval: false
+
+View(hom_raw)
+```
+
+The inspection confirms the predicted issues: blank rows, footnote numbers in column names, and an unnamed year column. Years also switch from calendar years to financial years. In particular, `1997` and `1997/98` appear as separate rows with overlapping periods, which should be noted as a limitation.
+
+### Question 4
+
+**Tidy the data.**
+
+```{r}
+#| label: clean-data
+
+hom <- hom_raw |>
+  clean_names() |>
+  rename(year = x1) |>
+  filter(!is.na(year) & !is.na(total)) |>
+  rename_with(~ str_remove(.x, "\\d+")) |>
+  rename(strangulation = strangu_lation) |>
+  mutate(
+    time_year = as.numeric(str_replace(year, "/\\d+", ".5")) + 0.5
+  )
+
+hom
+```
+
+`clean_names()` standardises column names, and `rename(year = x1)` names the previously blank year column. Blank rows are removed, footnote digits are stripped from column names, and `strangu_lation` is renamed to `strangulation`.
+
+`time_year` converts years into numeric midpoints. Calendar years such as `1993` become `1993.5`, while financial years such as `1997/98` become `1998.0`. The switch from calendar to financial years means `1997` and `1997/98` overlap by six months, which is a limitation of the dataset.
+
+## Visualise the data
+
+### Question 5
+
+**Create a plot showing all homicide data by apparent method of killing.**
+
+```{r}
+#| label: all-methods-plot
+
+hom |>
+  pivot_longer(
+    sharp_instrument:not_known,
+    names_to = "method",
+    values_to = "count"
+  ) |>
+  ggplot(aes(x = time_year, y = count)) +
+  geom_line() +
+  facet_wrap(~method, scales = "free_y") +
+  scale_x_continuous("Year") +
+  scale_y_continuous("Count") +
+  ggtitle("England and Wales homicides by apparent method of killing") +
+  theme_bw()
+```
+
+Each panel has its own y-axis scale, so counts can be compared over time within each method, but not directly by visual height across methods. `sharp_instrument` is consistently the largest category. The practical notes a large `poison_or_drugs` spike around 2002/03, associated with the Harold Shipman case. This illustrates how one event can strongly affect small annual counts.
+
+### Question 6
+
+**Create a plot for knife crime (“sharp instrument”).**
+
+```{r}
+#| label: sharp-instrument-plot
+
+hom |>
+  ggplot(aes(x = time_year, y = sharp_instrument)) +
+  geom_line() +
+  geom_point() +
+  scale_x_continuous("Year") +
+  scale_y_continuous("Count") +
+  ggtitle("England and Wales: homicides by sharp instrument") +
+  theme_bw()
+```
+
+### Question 7
+
+**Do you think knife crime in the UK increased from 1977 to 2024? Explain your answer.**
+
+Visually, the number of homicides involving sharp instruments appears to have increased. Counts rise from roughly 130–200 in the late 1970s and 1980s to around 250–280 in the 2020s, although the trend fluctuates.
+
+However, total homicides also increased over the period. The rise in sharp-instrument counts alone does not establish that knives account for a larger share of all homicides, so the model should account for the total homicide count.
+
+```{r}
+#| label: total-homicides-plot
+
+hom |>
+  ggplot(aes(x = time_year, y = total)) +
+  geom_line() +
+  geom_point() +
+  scale_x_continuous("Year") +
+  scale_y_continuous("Count") +
+  ggtitle("England and Wales: total homicides") +
+  theme_bw()
+```
+
+## Modelling the data
+
+Research question: **Has the use of sharp instruments in homicides in England and Wales increased over time, after accounting for the total number of homicides?**
+
+### Question 8
+
+**Fit a Poisson GLM that best answers this question. Consider whether to use an offset and/or time as a covariate.**
+
+```{r}
+#| label: poisson-models
+
+M1 <- glm(
+  sharp_instrument ~ time_year,
+  family = poisson,
+  data = hom
+)
+
+M2 <- glm(
+  sharp_instrument ~ offset(log(total)),
+  family = poisson,
+  data = hom
+)
+
+M3 <- glm(
+  sharp_instrument ~ time_year + offset(log(total)),
+  family = poisson,
+  data = hom
+)
+
+AIC(M1, M2, M3)
+```
+
+- **M1** tests whether the raw number of sharp-instrument homicides has changed over time.
+- **M2** models the share of homicides involving sharp instruments, assuming that share is constant over time.
+- **M3** models whether the share involving sharp instruments has changed over time, accounting for total homicides through an offset.
+
+M3 has the lowest AIC among these models in the practical output, so it is selected as the preferred model.
+
+```{r}
+#| label: poisson-model-summary
+
+summary(M3)
+exp(coef(M3)["time_year"])
+```
+
+The time coefficient is positive (about `0.004549`) and statistically significant in the Poisson model. Its exponentiated value is about `1.00456`, corresponding to an estimated increase of roughly 0.46% per year in the rate of sharp-instrument homicides relative to total homicides, under this model.
+
+### Question 9
+
+**After selecting a model, conduct diagnostics to check its fit.**
+
+```{r}
+#| label: overdispersion-diagnostics
+
+M3$deviance / M3$df.residual
+performance::check_overdispersion(M3)
+```
+
+The residual deviance divided by its degrees of freedom is about 2.03, and the overdispersion test reports a dispersion ratio of about 1.99 with a p-value below 0.001. This is evidence of overdispersion, meaning the Poisson model's variance assumption may be too restrictive and its standard errors may be underestimated.
+
+Refit the model using a quasi-Poisson family to obtain standard errors adjusted for overdispersion.
+
+```{r}
+#| label: quasi-poisson-model
+
+M3_quasi <- glm(
+  sharp_instrument ~ time_year + offset(log(total)),
+  family = quasipoisson,
+  data = hom
+)
+
+summary(M3_quasi)$coefficients
+```
+
+The time coefficient remains positive and statistically significant with the larger quasi-Poisson standard error, so the increasing trend is not explained solely by the original Poisson standard error estimate.
+
+```{r}
+#| label: residual-plot
+
+plot(M3, which = 1)
+```
+
+The residuals-versus-fitted plot does not show a strong systematic pattern, but the residual spread is uneven. Negative residuals appear at higher fitted values around 2010–2020. Further context would be needed to explain this dip and determine whether additional variables or a different model structure could account for it.
+
+### Question 10
+
+**Summarise the findings from the model in relation to the research question.**
+
+```{r}
+#| label: overall-relative-change
+
+year_increase <- exp(coef(M3_quasi)["time_year"])
+overall_increase <- year_increase ^ diff(range(hom$time_year))
+
+# Modelled percentage increase over the observed time range
+(overall_increase - 1) * 100
+```
+
+The results suggest that the share of homicides involving sharp instruments increased over time, even after accounting for the total number of homicides. The estimated rate ratio is about `1.00456` per year, equivalent to a relative increase of roughly 0.46% per year. Across the observed period, the practical output estimates an increase of about 23.6% in the relative rate.
+
+The raw-count model estimates a larger increase because it does not account for changes in the overall homicide count. Including `offset(log(total))` helps distinguish an increase in the number of sharp-instrument homicides from a change in their share of all homicides.
+
+These results describe an association over time; they do not explain why the trend occurred.
+
+### Question 11
+
+**Comment on limitations and potential follow-up analyses using this dataset or further data.**
+
+- **Unusual events:** A single event can distort small annual counts. The poison-or-drugs spike around 2002/03 is one example. Sensitivity analyses could examine the effect of unusual observations.
+- **Changes in data collection:** The series switches from calendar years to financial years around 1997, so the 1997 and 1997/98 observations overlap. The spreadsheet also cites different sources across the period. The current model does not account for these changes.
+- **Limited covariates:** The data does not include factors such as region, age, sex, or policy context. It can describe the trend but cannot explain its causes.
+- **Aggregated annual data:** There are only 48 observations. The dataset cannot directly describe seasonal patterns, regional variation, or individual-level risk factors.
+- **Potential follow-up work:** Additional data and covariates could help explain the trend. It would also be useful to test sensitivity to unusual observations, investigate the 2010–2020 decline, and check for changes in recording methods.
+
+## Footnote
+
+The practical identifies the Harold Shipman case as the explanation for the unusual poison-or-drugs spike, where many victims of a single killer were recorded in that period.
